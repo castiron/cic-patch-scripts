@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Ensure unattended-upgrades is installed, enabled, and running on Ubuntu 18/20.
-# Usage: curl -sL https://raw.githubusercontent.com/<owner>/cic-patch-scripts/main/ensure-unattended-upgrades.sh | sudo bash
+# If /root/pro-token.txt exists, attaches Ubuntu Pro for ESM security updates.
+# Usage: curl -sL https://raw.githubusercontent.com/castiron/cic-patch-scripts/main/ensure-unattended-upgrades.sh | sudo bash
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -25,6 +26,42 @@ fi
 
 UBUNTU_VERSION=$(grep VERSION_ID /etc/os-release | tr -d '"' | cut -d= -f2)
 info "Detected Ubuntu ${UBUNTU_VERSION}"
+
+# --- Ubuntu Pro / ESM setup ---
+
+PRO_TOKEN_FILE="/root/pro-token.txt"
+
+if [[ -f "$PRO_TOKEN_FILE" ]]; then
+    PRO_TOKEN=$(cat "$PRO_TOKEN_FILE" | tr -d '[:space:]')
+
+    if [[ -z "$PRO_TOKEN" ]]; then
+        warn "${PRO_TOKEN_FILE} exists but is empty. Skipping Pro attachment."
+    else
+        # Install ubuntu-advantage-tools (provides the 'pro' command)
+        if ! command -v pro &>/dev/null; then
+            info "Installing ubuntu-advantage-tools..."
+            apt-get update -qq
+            apt-get install -y ubuntu-advantage-tools
+            info "ubuntu-advantage-tools installed."
+        fi
+
+        # Check if already attached
+        if pro status 2>/dev/null | grep -q "attached"; then
+            info "Ubuntu Pro is already attached."
+        else
+            info "Attaching Ubuntu Pro..."
+            if pro attach "$PRO_TOKEN"; then
+                info "Ubuntu Pro attached successfully."
+            else
+                warn "Failed to attach Ubuntu Pro. Check your token."
+            fi
+        fi
+    fi
+else
+    warn "${PRO_TOKEN_FILE} not found."
+    warn "Without Ubuntu Pro, Ubuntu ${UBUNTU_VERSION} will NOT receive security updates (standard support has ended)."
+    warn "Place your Pro token in ${PRO_TOKEN_FILE} and re-run this script."
+fi
 
 # --- Install unattended-upgrades if missing ---
 
@@ -91,6 +128,9 @@ info "=== Status ==="
 echo "  unattended-upgrades package: $(dpkg-query -W -f='${Status}' unattended-upgrades 2>/dev/null)"
 echo "  apt-daily.timer:             $(systemctl is-active apt-daily.timer)"
 echo "  apt-daily-upgrade.timer:     $(systemctl is-active apt-daily-upgrade.timer)"
+if command -v pro &>/dev/null; then
+    echo "  Ubuntu Pro:                  $(pro status 2>/dev/null | grep -o 'attached\|detached' | head -1 || echo 'unknown')"
+fi
 echo "  Next apt-daily run:          $(systemctl list-timers apt-daily.timer --no-pager | grep apt-daily | awk '{print $1, $2, $3}')"
 echo ""
 info "Unattended security upgrades are configured and active."
