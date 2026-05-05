@@ -1,9 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ensure unattended-upgrades is installed, enabled, and running on Ubuntu 18/20.
-# If /root/pro-token.txt exists, attaches Ubuntu Pro for ESM security updates.
-# Usage: curl -sL https://raw.githubusercontent.com/castiron/cic-patch-scripts/main/ensure-unattended-upgrades.sh | sudo bash
+# Security check for Ubuntu 18/20 servers.
+# - Attaches Ubuntu Pro (if /root/pro-token.txt exists)
+# - Ensures unattended-upgrades is configured for security patches
+# - Mitigates CVE-2026-31431 (Copy Fail)
+# Usage: curl -sL "https://raw.githubusercontent.com/castiron/cic-patch-scripts/main/security-check.sh?$(date +%s)" | sudo bash
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,6 +28,33 @@ fi
 
 UBUNTU_VERSION=$(grep VERSION_ID /etc/os-release | tr -d '"' | cut -d= -f2)
 info "Detected Ubuntu ${UBUNTU_VERSION}"
+
+# --- CVE-2026-31431 (Copy Fail) mitigation ---
+# Local privilege escalation via algif_aead kernel module.
+# Mitigation: prevent the module from loading and unload it if present.
+# This does not affect dm-crypt/LUKS, IPsec, OpenSSL, SSH, or kTLS.
+
+MODPROBE_CONF="/etc/modprobe.d/disable-algif-aead.conf"
+MODPROBE_RULE="install algif_aead /bin/false"
+
+if [[ -f "$MODPROBE_CONF" ]] && grep -qF "$MODPROBE_RULE" "$MODPROBE_CONF"; then
+    info "CVE-2026-31431: algif_aead module already disabled via modprobe."
+else
+    warn "CVE-2026-31431: Disabling algif_aead module..."
+    echo "$MODPROBE_RULE" > "$MODPROBE_CONF"
+    info "CVE-2026-31431: Created ${MODPROBE_CONF}."
+fi
+
+if grep -qE '^algif_aead ' /proc/modules 2>/dev/null; then
+    warn "CVE-2026-31431: algif_aead is loaded. Unloading..."
+    if rmmod algif_aead 2>/dev/null; then
+        info "CVE-2026-31431: Module unloaded."
+    else
+        warn "CVE-2026-31431: Could not unload module (may be in use). A reboot is required."
+    fi
+else
+    info "CVE-2026-31431: algif_aead module is not loaded."
+fi
 
 # --- Ubuntu Pro / ESM setup ---
 
@@ -135,6 +164,15 @@ if command -v pro &>/dev/null; then
         echo "  Ubuntu Pro:                  attached"
     fi
 fi
+if [[ -f "$MODPROBE_CONF" ]] && grep -qF "$MODPROBE_RULE" "$MODPROBE_CONF"; then
+    if grep -qE '^algif_aead ' /proc/modules 2>/dev/null; then
+        echo "  CVE-2026-31431:              mitigated (reboot needed to unload module)"
+    else
+        echo "  CVE-2026-31431:              mitigated"
+    fi
+else
+    echo "  CVE-2026-31431:              NOT mitigated"
+fi
 echo "  Next apt-daily run:          $(systemctl list-timers apt-daily.timer --no-pager | grep apt-daily | awk '{print $1, $2, $3}')"
 echo ""
-info "Unattended security upgrades are configured and active."
+info "Security check complete."
