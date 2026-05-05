@@ -46,7 +46,7 @@ if [[ -f "$PRO_TOKEN_FILE" ]]; then
         fi
 
         # Check if already attached
-        if pro status 2>/dev/null | grep -q "is not attached"; then
+        if pro status 2>&1 | grep -q "is not attached"; then
             info "Attaching Ubuntu Pro..."
             if pro attach "$PRO_TOKEN"; then
                 info "Ubuntu Pro attached successfully."
@@ -129,7 +129,7 @@ echo "  unattended-upgrades package: $(dpkg-query -W -f='${Status}' unattended-u
 echo "  apt-daily.timer:             $(systemctl is-active apt-daily.timer)"
 echo "  apt-daily-upgrade.timer:     $(systemctl is-active apt-daily-upgrade.timer)"
 if command -v pro &>/dev/null; then
-    if pro status 2>/dev/null | grep -q "is not attached"; then
+    if pro status 2>&1 | grep -q "is not attached"; then
         echo "  Ubuntu Pro:                  NOT attached"
     else
         echo "  Ubuntu Pro:                  attached"
