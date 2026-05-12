@@ -5,6 +5,7 @@ set -euo pipefail
 # - Attaches Ubuntu Pro (if /root/pro-token.txt exists)
 # - Ensures unattended-upgrades is configured for security patches
 # - Mitigates CVE-2026-31431 (Copy Fail)
+# - Mitigates Dirty Frag (CVE-2026-43284, CVE-2026-43500) — disables esp4, esp6, rxrpc modules
 # Usage: curl -sL "https://raw.githubusercontent.com/castiron/cic-patch-scripts/main/security-check.sh?$(date +%s)" | sudo bash
 
 RED='\033[0;31m'
@@ -54,6 +55,83 @@ if grep -qE '^algif_aead ' /proc/modules 2>/dev/null; then
     fi
 else
     info "CVE-2026-31431: algif_aead module is not loaded."
+fi
+
+# --- Dirty Frag (CVE-2026-43284, CVE-2026-43500) mitigation ---
+# Kernel vulns in ESP (IPsec) and RxRPC modules.
+# Mitigation: prevent the modules from loading and unload them if present.
+# WARNING: This breaks IPsec VPNs (StrongSwan) and AFS/RxRPC apps.
+# If blockers are detected (modules loaded or IPsec config present), the
+# mitigation is SKIPPED. Set DIRTY_FRAG_FORCE=1 to apply anyway.
+
+DIRTY_FRAG_CONF="/etc/modprobe.d/dirty-frag.conf"
+DIRTY_FRAG_MODULES=(esp4 esp6 rxrpc)
+
+dirty_frag_blockers=()
+for mod in "${DIRTY_FRAG_MODULES[@]}"; do
+    if grep -qE "^${mod} " /proc/modules 2>/dev/null; then
+        dirty_frag_blockers+=("kernel module '${mod}' is currently loaded")
+    fi
+done
+shopt -s nullglob
+ipsec_configs=(/etc/ipsec.* /etc/strongswan*)
+shopt -u nullglob
+if [[ ${#ipsec_configs[@]} -gt 0 ]]; then
+    dirty_frag_blockers+=("IPsec/strongswan config present: ${ipsec_configs[*]}")
+fi
+
+dirty_frag_skipped=0
+if [[ ${#dirty_frag_blockers[@]} -gt 0 ]]; then
+    for b in "${dirty_frag_blockers[@]}"; do
+        warn "Dirty Frag blocker: $b"
+    done
+    if [[ "${DIRTY_FRAG_FORCE:-0}" == "1" ]]; then
+        warn "Dirty Frag: DIRTY_FRAG_FORCE=1 set — applying mitigation anyway."
+    else
+        warn "Dirty Frag: SKIPPING mitigation. Set DIRTY_FRAG_FORCE=1 to override."
+        dirty_frag_skipped=1
+    fi
+fi
+
+if [[ $dirty_frag_skipped -eq 0 ]]; then
+    dirty_frag_needs_update=0
+    if [[ ! -f "$DIRTY_FRAG_CONF" ]]; then
+        dirty_frag_needs_update=1
+    else
+        for mod in "${DIRTY_FRAG_MODULES[@]}"; do
+            if ! grep -qF "install $mod /bin/false" "$DIRTY_FRAG_CONF"; then
+                dirty_frag_needs_update=1
+                break
+            fi
+        done
+    fi
+
+    if [[ $dirty_frag_needs_update -eq 1 ]]; then
+        warn "Dirty Frag: Disabling esp4, esp6, rxrpc modules..."
+        {
+            for mod in "${DIRTY_FRAG_MODULES[@]}"; do
+                echo "install $mod /bin/false"
+            done
+        } > "$DIRTY_FRAG_CONF"
+        info "Dirty Frag: Wrote ${DIRTY_FRAG_CONF}."
+        info "Dirty Frag: Regenerating initramfs (this may take a moment)..."
+        update-initramfs -u -k all
+    else
+        info "Dirty Frag: modules already disabled via modprobe."
+    fi
+
+    for mod in "${DIRTY_FRAG_MODULES[@]}"; do
+        if grep -qE "^${mod} " /proc/modules 2>/dev/null; then
+            warn "Dirty Frag: $mod is loaded. Unloading..."
+            if rmmod "$mod" 2>/dev/null; then
+                info "Dirty Frag: $mod unloaded."
+            else
+                warn "Dirty Frag: Could not unload $mod (may be in use). A reboot is required."
+            fi
+        else
+            info "Dirty Frag: $mod module is not loaded."
+        fi
+    done
 fi
 
 # --- Ubuntu Pro / ESM setup ---
@@ -172,6 +250,20 @@ if [[ -f "$MODPROBE_CONF" ]] && grep -qF "$MODPROBE_RULE" "$MODPROBE_CONF"; then
     fi
 else
     echo "  CVE-2026-31431:              NOT mitigated"
+fi
+if [[ $dirty_frag_skipped -eq 1 ]]; then
+    echo "  Dirty Frag:                  SKIPPED (blocker detected; set DIRTY_FRAG_FORCE=1 to override)"
+elif [[ -f "$DIRTY_FRAG_CONF" ]] \
+   && grep -qF "install esp4 /bin/false" "$DIRTY_FRAG_CONF" \
+   && grep -qF "install esp6 /bin/false" "$DIRTY_FRAG_CONF" \
+   && grep -qF "install rxrpc /bin/false" "$DIRTY_FRAG_CONF"; then
+    if grep -qE '^(esp4|esp6|rxrpc) ' /proc/modules 2>/dev/null; then
+        echo "  Dirty Frag:                  mitigated (reboot needed to unload modules)"
+    else
+        echo "  Dirty Frag:                  mitigated"
+    fi
+else
+    echo "  Dirty Frag:                  NOT mitigated"
 fi
 echo "  Next apt-daily run:          $(systemctl list-timers apt-daily.timer --no-pager | grep apt-daily | awk '{print $1, $2, $3}')"
 echo ""
