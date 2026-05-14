@@ -147,7 +147,7 @@ if [[ -f "$PRO_TOKEN_FILE" ]]; then
         # Install ubuntu-advantage-tools (provides the 'pro' command)
         if ! command -v pro &>/dev/null; then
             info "Installing ubuntu-advantage-tools..."
-            apt-get update -qq
+            apt-get update -qq --allow-releaseinfo-change || warn "apt-get update had errors (likely from third-party repos); continuing."
             apt-get install -y ubuntu-advantage-tools
             info "ubuntu-advantage-tools installed."
         fi
@@ -174,7 +174,7 @@ fi
 
 if ! dpkg -l unattended-upgrades 2>/dev/null | grep -q '^ii'; then
     warn "unattended-upgrades is not installed. Installing..."
-    apt-get update -qq
+    apt-get update -qq --allow-releaseinfo-change || warn "apt-get update had errors (likely from third-party repos); continuing."
     apt-get install -y unattended-upgrades
     info "unattended-upgrades installed."
 else
